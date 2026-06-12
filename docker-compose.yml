@@ -1,0 +1,101 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: leadengine_postgres
+    environment:
+      POSTGRES_USER: lead
+      POSTGRES_PASSWORD: leadpass
+      POSTGRES_DB: leadengine
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lead -d leadengine"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: leadengine_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  langfuse:
+    image: langfuse/langfuse:latest
+    container_name: leadengine_langfuse
+    ports:
+      - "3001:3000"
+    environment:
+      DATABASE_URL: postgresql://lead:leadpass@postgres:5432/leadengine
+      NEXTAUTH_URL: http://localhost:3001
+      NEXTAUTH_SECRET: leadengine_langfuse_secret_2026
+      SALT: leadengine_langfuse_salt_2026
+      TELEMETRY_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  whisper:
+    image: hwdsl2/whisper:latest
+    container_name: leadengine_whisper
+    ports:
+      - "9000:8000"
+    environment:
+      WHISPER_MODEL: small
+      WHISPER_LANGUAGE: ""
+    volumes:
+      - whisper_models:/root/.cache/whisper
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: leadengine_livekit
+    ports:
+      - "7880:7880"    # HTTP + WebSocket
+      - "7881:7881"    # RTC (WebRTC)
+    environment:
+      LIVEKIT_KEYS: "devkey: devsecret"
+      LIVEKIT_LOG_LEVEL: info
+    command: --dev --bind 0.0.0.0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  livekit-sip:
+    image: livekit/sip:latest
+    container_name: leadengine_sip
+    ports:
+      - "5060:5060/udp"      # SIP signaling
+      - "5060:5060/tcp"      # SIP signaling (TCP)
+    environment:
+      SIP_LIVEKIT_URL: ws://livekit:7880
+      SIP_LIVEKIT_API_KEY: devkey
+      SIP_LIVEKIT_API_SECRET: devsecret
+      SIP_LOG_LEVEL: info
+    depends_on:
+      - livekit
+
+volumes:
+  postgres_data:
+  redis_data:
+  whisper_models:
